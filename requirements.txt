@@ -1,0 +1,19 @@
+# TG-Sync Dependencies
+
+# Telegram Client API (MTProto)
+telethon==1.37.0
+
+# Environment variables
+python-dotenv==1.0.1
+
+# Async HTTP (Telethon dependency + Claude API calls)
+aiohttp==3.10.11
+
+# HTTP client for Claude API
+httpx==0.28.1
+
+# YAML for knowledge base
+pyyaml==6.0.2
+
+# Logging (optional, for structured logs)
+# structlog==24.4.0
