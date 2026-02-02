@@ -82,6 +82,20 @@ class Config:
         default_factory=lambda: os.getenv("AI_DRAFT_FOR_DM_ONLY", "false").lower() == "true"
     )
 
+    # Vector Store (RAG)
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    embedding_model: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    )
+    vector_db_path: str = field(default_factory=lambda: os.getenv("VECTOR_DB_PATH", "data/vector_db"))
+    vector_search_limit: int = field(
+        default_factory=lambda: int(os.getenv("VECTOR_SEARCH_LIMIT", "5"))
+    )
+    # Минимальный score для релевантных результатов (0.0 - 1.0)
+    vector_min_score: float = field(
+        default_factory=lambda: float(os.getenv("VECTOR_MIN_SCORE", "0.7"))
+    )
+
     # Пути
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", "data/messages.db"))
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
@@ -116,6 +130,8 @@ class Config:
         """Создать необходимые директории."""
         Path("data/sessions").mkdir(parents=True, exist_ok=True)
         Path("data").mkdir(parents=True, exist_ok=True)
+        Path("data/vector_db").mkdir(parents=True, exist_ok=True)
+        Path("data/documents").mkdir(parents=True, exist_ok=True)
 
     @property
     def accounts(self) -> list[AccountConfig]:

@@ -51,6 +51,11 @@ class BotCommands:
         self.bot.add_event_handler(self._cmd_kb_del, events.NewMessage(pattern=r"/kb_del", chats=[self.config.hub_chat_id]))
         self.bot.add_event_handler(self._cmd_kb_search, events.NewMessage(pattern=r"/kb_search", chats=[self.config.hub_chat_id]))
 
+        # Vector Store commands
+        self.bot.add_event_handler(self._cmd_kb_index, events.NewMessage(pattern=r"/kb_index", chats=[self.config.hub_chat_id]))
+        self.bot.add_event_handler(self._cmd_kb_upload, events.NewMessage(pattern=r"/kb_upload", chats=[self.config.hub_chat_id]))
+        self.bot.add_event_handler(self._cmd_kb_vstats, events.NewMessage(pattern=r"/kb_vstats", chats=[self.config.hub_chat_id]))
+
         logger.info("Команды бота зарегистрированы ✓")
 
     async def _cmd_help(self, event):
@@ -79,7 +84,12 @@ class BotCommands:
   /kb_list — Показать все статьи
   /kb_add [категория] [заголовок] | [текст]
   /kb_del [id] — Удалить статью
-  /kb_search [запрос] — Поиск по базе
+  /kb_search [запрос] — Семантический поиск
+
+🗄️ <b>Векторный поиск (RAG):</b>
+  /kb_index — Индексировать базу для поиска
+  /kb_upload — Загрузить PDF/DOCX из data/documents
+  /kb_vstats — Статистика VectorStore
 
 💡 <b>Как отвечать:</b>
   • <b>Reply</b> на сообщение → ответ уходит в оригинальный чат
@@ -432,5 +442,135 @@ class BotCommands:
                 f"      {article.content[:120]}{'...' if len(article.content) > 120 else ''}"
             )
             lines.append("")
+
+        await event.reply("\n".join(lines), parse_mode="html")
+
+    # ──────────────────────────────────────────
+    # Vector Store Commands
+    # ──────────────────────────────────────────
+
+    async def _cmd_kb_index(self, event):
+        """
+        Синхронизировать базу знаний с VectorStore.
+        Создаёт embeddings для семантического поиска.
+        """
+        if not self.kb:
+            await event.reply("⚠️ AI-модуль не инициализирован.")
+            return
+
+        if not self.config.openai_api_key:
+            await event.reply(
+                "⚠️ <b>OPENAI_API_KEY не настроен</b>\n\n"
+                "Для семантического поиска нужен OpenAI API.\n"
+                "Добавьте в .env:\n"
+                "<code>OPENAI_API_KEY=sk-...</code>",
+                parse_mode="html"
+            )
+            return
+
+        await event.reply("🔄 Индексирую базу знаний... Это может занять некоторое время.")
+
+        try:
+            result = self.kb.sync_to_vector_store()
+
+            if "error" in result:
+                await event.reply(f"❌ Ошибка: {result['error']}")
+            else:
+                await event.reply(
+                    f"✅ <b>Индексация завершена!</b>\n\n"
+                    f"  📚 Проиндексировано: <b>{result['synced']}</b> статей\n"
+                    f"  🔍 Теперь поиск работает семантически!",
+                    parse_mode="html"
+                )
+                logger.info(f"KB indexed: {result['synced']} articles")
+        except Exception as e:
+            logger.error(f"KB index error: {e}")
+            await event.reply(f"❌ Ошибка индексации: {e}")
+
+    async def _cmd_kb_upload(self, event):
+        """
+        Загрузить документы из папки data/documents в базу знаний.
+        Поддерживает PDF, DOCX, TXT, MD файлы.
+        """
+        if not self.kb:
+            await event.reply("⚠️ AI-модуль не инициализирован.")
+            return
+
+        if not self.config.openai_api_key:
+            await event.reply(
+                "⚠️ <b>OPENAI_API_KEY не настроен</b>\n\n"
+                "Для загрузки документов нужен OpenAI API.\n"
+                "Добавьте в .env:\n"
+                "<code>OPENAI_API_KEY=sk-...</code>",
+                parse_mode="html"
+            )
+            return
+
+        await event.reply(
+            "🔄 Загружаю документы из <code>data/documents/</code>...\n"
+            "Поддерживаемые форматы: PDF, DOCX, TXT, MD",
+            parse_mode="html"
+        )
+
+        try:
+            result = self.kb.load_documents_to_vector_store()
+
+            if "error" in result:
+                await event.reply(f"❌ Ошибка: {result['error']}")
+            elif result.get("loaded", 0) == 0:
+                await event.reply(
+                    "📁 Документы не найдены.\n\n"
+                    "Положите файлы (PDF, DOCX, TXT) в папку:\n"
+                    "<code>data/documents/</code>\n\n"
+                    "Затем выполните <code>/kb_upload</code> снова.",
+                    parse_mode="html"
+                )
+            else:
+                await event.reply(
+                    f"✅ <b>Документы загружены!</b>\n\n"
+                    f"  📄 Загружено: <b>{result['loaded']}</b> чанков\n"
+                    f"  🔍 Контент доступен для поиска",
+                    parse_mode="html"
+                )
+                logger.info(f"Documents loaded: {result['loaded']} chunks")
+        except Exception as e:
+            logger.error(f"KB upload error: {e}")
+            await event.reply(f"❌ Ошибка загрузки: {e}")
+
+    async def _cmd_kb_vstats(self, event):
+        """Статистика VectorStore."""
+        if not self.kb:
+            await event.reply("⚠️ AI-модуль не инициализирован.")
+            return
+
+        stats = self.kb.get_vector_stats()
+
+        if "error" in stats:
+            await event.reply(
+                f"⚠️ VectorStore недоступен: {stats['error']}\n\n"
+                "Настройте OPENAI_API_KEY и выполните /kb_index",
+                parse_mode="html"
+            )
+            return
+
+        lines = [
+            "🗄️ <b>Статистика VectorStore</b>",
+            "",
+            f"  📚 Всего документов: <b>{stats['total_documents']}</b>",
+            f"  🤖 Модель embeddings: <b>{stats['embedding_model']}</b>",
+            f"  📁 Путь к БД: <code>{stats['db_path']}</code>",
+        ]
+
+        if stats.get("by_category"):
+            lines.append("")
+            lines.append("  <b>По категориям:</b>")
+            for cat, count in stats["by_category"].items():
+                lines.append(f"    • {cat}: {count}")
+
+        if stats.get("by_source"):
+            lines.append("")
+            lines.append("  <b>По источникам:</b>")
+            for src, count in stats["by_source"].items():
+                lines.append(f"    • {src}: {count}")
 
         await event.reply("\n".join(lines), parse_mode="html")

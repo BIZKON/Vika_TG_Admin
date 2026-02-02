@@ -8,6 +8,12 @@
 1. SQLite таблица kb_articles — основная база (управляется через бота)
 2. YAML файл data/knowledge_base.yml — начальная загрузка
 3. Автоматически извлечённые пары "вопрос-ответ" из истории Виктории
+4. Векторное хранилище LanceDB — семантический поиск
+
+Архитектура:
+- SQLite: CRUD операции, статистика, совместимость
+- LanceDB: семантический поиск через embeddings
+- При добавлении/удалении — синхронизация обеих БД
 """
 
 import logging
@@ -17,7 +23,25 @@ from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 
+from config import config
+
 logger = logging.getLogger(__name__)
+
+# Ленивый импорт VectorStore (может быть не настроен)
+_vector_store = None
+
+
+def _get_vector_store():
+    """Получить VectorStore если настроен OpenAI API."""
+    global _vector_store
+    if _vector_store is None and config.openai_api_key:
+        try:
+            from vector_store import VectorStore
+            _vector_store = VectorStore()
+            logger.info("VectorStore подключен к KnowledgeBase")
+        except Exception as e:
+            logger.warning(f"VectorStore недоступен: {e}")
+    return _vector_store
 
 
 @dataclass
@@ -154,6 +178,21 @@ class KnowledgeBase:
             conn.commit()
             article_id = cursor.lastrowid
             logger.info(f"📚 KB: добавлена статья #{article_id}: {title}")
+
+            # Синхронизация с VectorStore
+            vs = _get_vector_store()
+            if vs:
+                try:
+                    vs.add_document(
+                        title=title,
+                        content=content,
+                        category=category,
+                        source="sqlite",
+                        doc_id=f"kb_{article_id}",
+                    )
+                except Exception as e:
+                    logger.warning(f"Ошибка синхронизации с VectorStore: {e}")
+
             return article_id
         finally:
             conn.close()
@@ -164,7 +203,18 @@ class KnowledgeBase:
         try:
             cursor = conn.execute("DELETE FROM kb_articles WHERE id = ?", (article_id,))
             conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+
+            # Синхронизация с VectorStore
+            if deleted:
+                vs = _get_vector_store()
+                if vs:
+                    try:
+                        vs.delete_document(f"kb_{article_id}")
+                    except Exception as e:
+                        logger.warning(f"Ошибка удаления из VectorStore: {e}")
+
+            return deleted
         finally:
             conn.close()
 
@@ -206,8 +256,49 @@ class KnowledgeBase:
     def search(self, query: str, limit: int = 5) -> list[KBArticle]:
         """
         Поиск по базе знаний.
-        Ищет по ключевым словам, заголовкам и содержимому.
+
+        Приоритет:
+        1. Семантический поиск через VectorStore (если настроен)
+        2. Fallback на keyword-based поиск в SQLite
         """
+        # Пробуем семантический поиск
+        vs = _get_vector_store()
+        if vs:
+            try:
+                results = vs.search(query, limit=limit)
+                if results:
+                    # Конвертируем SearchResult в KBArticle
+                    articles = []
+                    for r in results:
+                        # Пытаемся получить полную статью из SQLite
+                        if r.id.startswith("kb_"):
+                            article_id = int(r.id.replace("kb_", ""))
+                            article = self._get_by_id(article_id)
+                            if article:
+                                articles.append(article)
+                                continue
+
+                        # Fallback: создаём KBArticle из результата поиска
+                        articles.append(KBArticle(
+                            id=None,
+                            category=r.category,
+                            title=r.title,
+                            content=r.content,
+                            keywords="",
+                            usage_count=0,
+                        ))
+
+                    if articles:
+                        logger.debug(f"Семантический поиск: найдено {len(articles)} результатов")
+                        return articles
+            except Exception as e:
+                logger.warning(f"Ошибка семантического поиска: {e}")
+
+        # Fallback: keyword-based поиск
+        return self._keyword_search(query, limit)
+
+    def _keyword_search(self, query: str, limit: int = 5) -> list[KBArticle]:
+        """Keyword-based поиск (fallback)."""
         conn = self._get_conn()
         try:
             # Разбиваем запрос на слова
@@ -258,8 +349,28 @@ class KnowledgeBase:
             return articles
 
         except Exception as e:
-            logger.error(f"KB search error: {e}")
+            logger.error(f"KB keyword search error: {e}")
             return []
+        finally:
+            conn.close()
+
+    def _get_by_id(self, article_id: int) -> KBArticle | None:
+        """Получить статью по ID."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM kb_articles WHERE id = ?",
+                (article_id,)
+            ).fetchone()
+            if row:
+                # Инкрементим usage_count
+                conn.execute(
+                    "UPDATE kb_articles SET usage_count = usage_count + 1 WHERE id = ?",
+                    (article_id,)
+                )
+                conn.commit()
+                return self._row_to_article(row)
+            return None
         finally:
             conn.close()
 
@@ -404,6 +515,104 @@ class KnowledgeBase:
             }
         finally:
             conn.close()
+
+    # ──────────────────────────────────────────
+    # Vector Store синхронизация
+    # ──────────────────────────────────────────
+
+    def sync_to_vector_store(self) -> dict:
+        """
+        Синхронизировать все статьи из SQLite в VectorStore.
+        Используется для первоначальной индексации или переиндексации.
+        """
+        vs = _get_vector_store()
+        if not vs:
+            return {"error": "VectorStore не настроен (нужен OPENAI_API_KEY)"}
+
+        articles = self.get_all_articles()
+        if not articles:
+            return {"synced": 0, "message": "Нет статей для синхронизации"}
+
+        # Подготавливаем документы для батч-загрузки
+        documents = []
+        for a in articles:
+            documents.append({
+                "id": f"kb_{a.id}",
+                "title": a.title,
+                "content": a.content,
+                "category": a.category,
+                "source": "sqlite",
+            })
+
+        try:
+            # Очищаем старые записи из sqlite
+            for doc in documents:
+                try:
+                    vs.delete_document(doc["id"])
+                except Exception:
+                    pass
+
+            # Добавляем батчем
+            vs.add_documents_batch(documents)
+
+            return {
+                "synced": len(documents),
+                "message": f"Синхронизировано {len(documents)} статей в VectorStore",
+            }
+        except Exception as e:
+            logger.error(f"Ошибка синхронизации: {e}")
+            return {"error": str(e)}
+
+    def load_documents_to_vector_store(self, dir_path: str = "data/documents") -> dict:
+        """
+        Загрузить документы из директории в VectorStore.
+
+        Args:
+            dir_path: Путь к директории с документами (PDF, DOCX, TXT)
+        """
+        vs = _get_vector_store()
+        if not vs:
+            return {"error": "VectorStore не настроен (нужен OPENAI_API_KEY)"}
+
+        try:
+            from document_loader import DocumentLoader
+
+            loader = DocumentLoader(dir_path)
+            chunks = loader.load_directory()
+
+            if not chunks:
+                return {"loaded": 0, "message": "Документы не найдены"}
+
+            # Подготавливаем для батч-загрузки
+            documents = []
+            for chunk in chunks:
+                documents.append({
+                    "title": chunk.title,
+                    "content": chunk.content,
+                    "category": chunk.category,
+                    "source": chunk.source,
+                })
+
+            vs.add_documents_batch(documents)
+
+            return {
+                "loaded": len(documents),
+                "message": f"Загружено {len(documents)} чанков из документов",
+            }
+        except Exception as e:
+            logger.error(f"Ошибка загрузки документов: {e}")
+            return {"error": str(e)}
+
+    def get_vector_stats(self) -> dict:
+        """Получить статистику VectorStore."""
+        vs = _get_vector_store()
+        if not vs:
+            return {"error": "VectorStore не настроен"}
+
+        try:
+            return vs.get_stats()
+        except Exception as e:
+            return {"error": str(e)}
 
     # ──────────────────────────────────────────
     # Helpers
