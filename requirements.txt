@@ -15,5 +15,25 @@ httpx==0.28.1
 # YAML for knowledge base
 pyyaml==6.0.2
 
+# ─── Vector Store & RAG ───
+# Vector database (embedded, serverless)
+lancedb==0.15.0
+
+# OpenAI embeddings
+openai==1.58.1
+
+# Data processing
+pyarrow==18.1.0
+
+# ─── Document Loaders ───
+# PDF parsing
+pypdf==5.1.0
+
+# Word documents
+python-docx==1.1.2
+
+# Text extraction (fallback)
+unstructured==0.16.11
+
 # Logging (optional, for structured logs)
 # structlog==24.4.0
