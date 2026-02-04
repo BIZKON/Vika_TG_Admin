@@ -1,39 +1,35 @@
-# TG-Sync Dependencies
+# ═══════════════════════════════════════════
+# TG-Hub V2: Зависимости
+# ═══════════════════════════════════════════
 
-# Telegram Client API (MTProto)
-telethon==1.37.0
+# Telegram Bot (aiogram 3.x с поддержкой Business API)
+aiogram>=3.4.0
 
-# Environment variables
-python-dotenv==1.0.1
+# Web server для webhooks
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
 
-# Async HTTP (Telethon dependency + Claude API calls)
-aiohttp==3.10.11
+# HTTP клиент
+aiohttp>=3.9.0
+httpx>=0.26.0
 
-# HTTP client for Claude API
-httpx==0.28.1
+# Конфигурация
+python-dotenv>=1.0.0
 
-# YAML for knowledge base
-pyyaml==6.0.2
+# AI: Claude API
+anthropic>=0.18.0
 
-# ─── Vector Store & RAG ───
-# Vector database (embedded, serverless)
-lancedb==0.15.0
+# AI: OpenAI Embeddings
+openai>=1.12.0
 
-# OpenAI embeddings
-openai==1.58.1
+# Vector Store (RAG)
+lancedb>=0.5.0
+pyarrow>=15.0.0
 
-# Data processing
-pyarrow==18.1.0
+# Документы для RAG
+pypdf>=4.0.0
+python-docx>=1.1.0
 
-# ─── Document Loaders ───
-# PDF parsing
-pypdf==5.1.0
-
-# Word documents
-python-docx==1.1.2
-
-# Text extraction (fallback)
-unstructured==0.16.11
-
-# Logging (optional, for structured logs)
-# structlog==24.4.0
+# Утилиты
+pyyaml>=6.0.0
